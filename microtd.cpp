@@ -15,7 +15,7 @@
 
 #ifdef ARDUINO
   #include <stdint.h>
-  #include <Arduboy2.h>
+  #include "lib/Arduboy2.h"
 #else
   // for the PC
   #include <iostream>
@@ -1507,6 +1507,7 @@ struct Game
               mCursor = mCursor.right().down();
           }
         }
+        [[fallthrough]];
 
       case STATE_PLAYING_WAVE:
         switch (button)
@@ -1717,6 +1718,7 @@ struct Game
     mSelectedMenuItem = 0;
 
     playSound(SOUND_PUT);
+    return true;
   }
 
   MainMenuItem getMainMenuItem(uint8_t index)
@@ -1749,7 +1751,25 @@ struct Game
       result.mSubText[4] = ':';
       result.mSubText[5] = ' ';
 
-      sprintf(&result.mSubText[6],"%d",mRecords[index]);
+      uint8_t record = mRecords[index];
+      if (record >= 100)
+      {
+        result.mSubText[6] = '0' + (record / 100);
+        result.mSubText[7] = '0' + ((record / 10) % 10);
+        result.mSubText[8] = '0' + (record % 10);
+        result.mSubText[9] = 0;
+      }
+      else if (record >= 10)
+      {
+        result.mSubText[6] = '0' + (record / 10);
+        result.mSubText[7] = '0' + (record % 10);
+        result.mSubText[8] = 0;
+      }
+      else
+      {
+        result.mSubText[6] = '0' + record;
+        result.mSubText[7] = 0;
+      }
     }
     else if (index == MAPS_TOTAL)
     {

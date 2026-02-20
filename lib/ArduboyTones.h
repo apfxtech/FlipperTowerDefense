@@ -40,16 +40,16 @@ typedef struct {
     const uint16_t* pattern;
 } ArduboyToneSoundRequest;
 
-static FuriMessageQueue* g_arduboy_sound_queue = NULL;
-static FuriThread* g_arduboy_sound_thread = NULL;
-static volatile bool g_arduboy_sound_thread_running = false;
-static volatile bool g_arduboy_audio_enabled = false;
+inline FuriMessageQueue* g_arduboy_sound_queue = NULL;
+inline FuriThread* g_arduboy_sound_thread = NULL;
+inline volatile bool g_arduboy_sound_thread_running = false;
+inline volatile bool g_arduboy_audio_enabled = false;
 
-static volatile bool g_arduboy_tones_playing = false;
+inline volatile bool g_arduboy_tones_playing = false;
 
-static volatile uint8_t g_arduboy_volume_mode = VOLUME_IN_TONE;
-static volatile bool g_arduboy_force_high = false;
-static volatile bool g_arduboy_force_norm = false;
+inline volatile uint8_t g_arduboy_volume_mode = VOLUME_IN_TONE;
+inline volatile bool g_arduboy_force_high = false;
+inline volatile bool g_arduboy_force_norm = false;
 
 static const float kArduboyToneSoundVolumeNormal = 1.0f;
 static const float kArduboyToneSoundVolumeHigh = 1.0f;

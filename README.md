@@ -1,4 +1,4 @@
-# MicroTD
+# FlipperTowerDefense
 
 ![](resources/preview.gif)
 
@@ -14,4 +14,3 @@ ideas for derivative work:
 - Make this a game with campaign (progression through levels increasing in difficulty).
 - Make this CLI PC game, e.g. with ncurses. Just rewrite the init/loop stuff for PC.
 - Port this to other platforms (Pokitto, Gamebuino, ...).
-# FlipperTowerDefense

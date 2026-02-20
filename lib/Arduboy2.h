@@ -6,6 +6,7 @@
 #include "EEPROM.h"
 #include <stdint.h>
 #include <stddef.h>
+#include <stdlib.h>
 #include <string.h>
 
 #ifdef __cplusplus
@@ -112,6 +113,11 @@ public:
         game_mutex_ = game_mutex;
         exit_requested_ = exit_requested;
         external_timing_ = false;
+        frameCount = 0;
+        last_frame_ms_ = 0;
+    }
+
+    void begin() {
     }
 
     void exitToBootloader() {
@@ -161,7 +167,7 @@ public:
             return;
         }
 
-        if(event->type == InputTypePress || event->type == InputTypeRepeat) {
+        if(event->type == InputTypePress) {
             *st = (uint8_t)(*st | bit);
         } else if(event->type == InputTypeRelease) {
             *st = (uint8_t)(*st & (uint8_t)~bit);
@@ -183,19 +189,19 @@ public:
 
     bool nextFrame() {
         if(external_timing_) {
-            frame_count_++;
+            frameCount++;
             return true;
         }
         const uint32_t now = millis();
         if((uint32_t)(now - last_frame_ms_) < frame_duration_ms_) return false;
         last_frame_ms_ = now;
-        frame_count_++;
+        frameCount++;
         return true;
     }
 
     bool everyXFrames(uint8_t n) const {
         if(n == 0) return false;
-        return (frame_count_ % n) == 0;
+        return (frameCount % n) == 0;
     }
 
     void pollButtons() {
@@ -319,6 +325,189 @@ public:
         }
     }
 
+    void drawFastHLine(int16_t x, int16_t y, uint8_t w, uint8_t color = WHITE) {
+        for(uint8_t i = 0; i < w; ++i) {
+            drawPixelMode_(x + i, y, color);
+        }
+    }
+
+    void drawFastVLine(int16_t x, int16_t y, uint8_t h, uint8_t color = WHITE) {
+        for(uint8_t i = 0; i < h; ++i) {
+            drawPixelMode_(x, y + i, color);
+        }
+    }
+
+    void drawLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint8_t color = WHITE) {
+        const int16_t dx = (x0 > x1) ? (x0 - x1) : (x1 - x0);
+        const int16_t sx = (x0 < x1) ? 1 : -1;
+        const int16_t dy = -((y0 > y1) ? (y0 - y1) : (y1 - y0));
+        const int16_t sy = (y0 < y1) ? 1 : -1;
+        int16_t err = dx + dy;
+
+        while(true) {
+            drawPixelMode_(x0, y0, color);
+            if(x0 == x1 && y0 == y1) break;
+            const int16_t e2 = (int16_t)(2 * err);
+            if(e2 >= dy) {
+                err += dy;
+                x0 += sx;
+            }
+            if(e2 <= dx) {
+                err += dx;
+                y0 += sy;
+            }
+        }
+    }
+
+    void drawRect(int16_t x, int16_t y, uint8_t w, uint8_t h, uint8_t color = WHITE) {
+        if(w == 0 || h == 0) return;
+        drawFastHLine(x, y, w, color);
+        drawFastHLine(x, y + h - 1, w, color);
+        drawFastVLine(x, y, h, color);
+        drawFastVLine(x + w - 1, y, h, color);
+    }
+
+    void fillRect(int16_t x, int16_t y, uint8_t w, uint8_t h, uint8_t color = WHITE) {
+        for(uint8_t i = 0; i < w; ++i) {
+            drawFastVLine(x + i, y, h, color);
+        }
+    }
+
+    void fillCircle(int16_t x0, int16_t y0, uint8_t r, uint8_t color = WHITE) {
+        drawFastVLine(x0, y0 - r, (uint8_t)(2 * r + 1), color);
+
+        int16_t f = 1 - r;
+        int16_t ddF_x = 1;
+        int16_t ddF_y = -2 * r;
+        int16_t x = 0;
+        int16_t y = r;
+
+        while(x < y) {
+            if(f >= 0) {
+                y--;
+                ddF_y += 2;
+                f += ddF_y;
+            }
+            x++;
+            ddF_x += 2;
+            f += ddF_x;
+
+            drawFastVLine(x0 + x, y0 - y, (uint8_t)(2 * y + 1), color);
+            drawFastVLine(x0 - x, y0 - y, (uint8_t)(2 * y + 1), color);
+            drawFastVLine(x0 + y, y0 - x, (uint8_t)(2 * x + 1), color);
+            drawFastVLine(x0 - y, y0 - x, (uint8_t)(2 * x + 1), color);
+        }
+    }
+
+    void drawBitmap(
+        int16_t x,
+        int16_t y,
+        const uint8_t* bitmap,
+        uint8_t w,
+        uint8_t h,
+        uint8_t color = WHITE) {
+        if(!bitmap) return;
+
+        const uint8_t pages = (uint8_t)((h + 7) >> 3);
+        for(uint8_t page = 0; page < pages; ++page) {
+            for(uint8_t i = 0; i < w; ++i) {
+                const uint8_t b = pgm_read_byte(bitmap + (uint16_t)page * w + i);
+                for(uint8_t bit = 0; bit < 8; ++bit) {
+                    const uint8_t yy = (uint8_t)(page * 8 + bit);
+                    if(yy >= h) break;
+
+                    const int16_t px = x + i;
+                    const int16_t py = y + yy;
+                    const bool set = (b & (uint8_t)(1U << bit)) != 0;
+
+                    if(color == INVERT) {
+                        if(set) invertPixel_(px, py);
+                    } else if(color == BLACK) {
+                        drawPixel(px, py, set ? BLACK : WHITE);
+                    } else {
+                        drawPixel(px, py, set ? WHITE : BLACK);
+                    }
+                }
+            }
+        }
+    }
+
+    void setCursor(int16_t x, int16_t y) {
+        cursor_x_ = x;
+        cursor_y_ = y;
+    }
+
+    void setTextColor(uint8_t color) {
+        text_color_ = color;
+    }
+
+    void setTextBackground(uint8_t bg) {
+        text_bg_ = bg;
+    }
+
+    size_t write(uint8_t c) {
+        if(c == '\r') return 1;
+        if(c == '\n') {
+            cursor_x_ = 0;
+            cursor_y_ += 8;
+            return 1;
+        }
+
+        if(c > 127) c = '?';
+        if(c < 32) c = 32;
+
+        const uint16_t glyph_offset = (uint16_t)c * 5U;
+        for(uint8_t col = 0; col < 5; ++col) {
+            const uint8_t line = pgm_read_byte(font5x7_ + glyph_offset + col);
+            for(uint8_t row = 0; row < 8; ++row) {
+                if(line & (uint8_t)(1U << row)) {
+                    drawPixel(cursor_x_ + col, cursor_y_ + row, text_color_);
+                } else {
+                    drawPixel(cursor_x_ + col, cursor_y_ + row, text_bg_);
+                }
+            }
+        }
+
+        for(uint8_t row = 0; row < 8; ++row) {
+            drawPixel(cursor_x_ + 5, cursor_y_ + row, text_bg_);
+        }
+
+        cursor_x_ += 6;
+        return 1;
+    }
+
+    size_t print(const char* s) {
+        if(!s) return 0;
+        size_t n = 0;
+        while(*s) n += write((uint8_t)*s++);
+        return n;
+    }
+
+    size_t print(char c) {
+        return write((uint8_t)c);
+    }
+
+    size_t print(int v) {
+        return print((long)v);
+    }
+
+    size_t print(unsigned int v) {
+        return print((unsigned long)v);
+    }
+
+    size_t print(long v) {
+        if(v < 0) {
+            size_t n = write('-');
+            unsigned long uv = (unsigned long)(-(v + 1)) + 1UL;
+            return n + printUnsigned_(uv);
+        }
+        return printUnsigned_((unsigned long)v);
+    }
+
+    size_t print(unsigned long v) {
+        return printUnsigned_(v);
+    }
+
     void drawSprite(
         int16_t x,
         int16_t y,
@@ -359,9 +548,7 @@ public:
         last_frame_ms_ = millis();
     }
 
-    uint32_t frameCount() const {
-        return frame_count_;
-    }
+    uint32_t frameCount = 0;
 
     static constexpr uint16_t eepromSysFlags = 1;
     // Audio mute control. 0 = audio off, non-zero = audio on
@@ -773,6 +960,81 @@ private:
     //     return (tick * 1000u) / hz;
     // }
 
+    size_t printUnsigned_(unsigned long v) {
+        char buf[21];
+        size_t len = 0;
+
+        do {
+            buf[len++] = (char)('0' + (v % 10UL));
+            v /= 10UL;
+        } while(v > 0 && len < sizeof(buf));
+
+        size_t n = 0;
+        while(len > 0) {
+            n += write((uint8_t)buf[--len]);
+        }
+        return n;
+    }
+
+    void invertPixel_(int16_t x, int16_t y) {
+        if(!sBuffer_) return;
+        if((uint16_t)x >= WIDTH || (uint16_t)y >= HEIGHT) return;
+
+        const uint16_t idx = (uint16_t)x + (uint16_t)((y >> 3) * WIDTH);
+        sBuffer_[idx] ^= (uint8_t)(1U << (y & 7));
+    }
+
+    void drawPixelMode_(int16_t x, int16_t y, uint8_t color) {
+        if(color == INVERT) {
+            invertPixel_(x, y);
+        } else {
+            drawPixel(x, y, color);
+        }
+    }
+
+    inline static const uint8_t font5x7_[] PROGMEM = {
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x3E, 0x5B, 0x4F, 0x5B, 0x3E, 0x3E, 0x6B, 0x4F, 0x6B, 0x3E, 0x1C,
+            0x3E, 0x7C, 0x3E, 0x1C, 0x18, 0x3C, 0x7E, 0x3C, 0x18, 0x1C, 0x57, 0x7D, 0x57, 0x1C, 0x1C, 0x5E,
+            0x7F, 0x5E, 0x1C, 0x00, 0x18, 0x3C, 0x18, 0x00, 0xFF, 0xE7, 0xC3, 0xE7, 0xFF, 0x00, 0x18, 0x24,
+            0x18, 0x00, 0xFF, 0xE7, 0xDB, 0xE7, 0xFF, 0x30, 0x48, 0x3A, 0x06, 0x0E, 0x26, 0x29, 0x79, 0x29,
+            0x26, 0x40, 0x7F, 0x05, 0x05, 0x07, 0x40, 0x7F, 0x05, 0x25, 0x3F, 0x5A, 0x3C, 0xE7, 0x3C, 0x5A,
+            0x7F, 0x3E, 0x1C, 0x1C, 0x08, 0x08, 0x1C, 0x1C, 0x3E, 0x7F, 0x14, 0x22, 0x7F, 0x22, 0x14, 0x5F,
+            0x5F, 0x00, 0x5F, 0x5F, 0x06, 0x09, 0x7F, 0x01, 0x7F, 0x00, 0x66, 0x89, 0x95, 0x6A, 0x60, 0x60,
+            0x60, 0x60, 0x60, 0x94, 0xA2, 0xFF, 0xA2, 0x94, 0x08, 0x04, 0x7E, 0x04, 0x08, 0x10, 0x20, 0x7E,
+            0x20, 0x10, 0x08, 0x08, 0x2A, 0x1C, 0x08, 0x08, 0x1C, 0x2A, 0x08, 0x08, 0x1E, 0x10, 0x10, 0x10,
+            0x10, 0x0C, 0x1E, 0x0C, 0x1E, 0x0C, 0x30, 0x38, 0x3E, 0x38, 0x30, 0x06, 0x0E, 0x3E, 0x0E, 0x06,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x5F, 0x00, 0x00, 0x00, 0x07, 0x00, 0x07, 0x00, 0x14,
+            0x7F, 0x14, 0x7F, 0x14, 0x24, 0x2A, 0x7F, 0x2A, 0x12, 0x23, 0x13, 0x08, 0x64, 0x62, 0x36, 0x49,
+            0x56, 0x20, 0x50, 0x00, 0x08, 0x07, 0x03, 0x00, 0x00, 0x1C, 0x22, 0x41, 0x00, 0x00, 0x41, 0x22,
+            0x1C, 0x00, 0x2A, 0x1C, 0x7F, 0x1C, 0x2A, 0x08, 0x08, 0x3E, 0x08, 0x08, 0x00, 0x80, 0x70, 0x30,
+            0x00, 0x08, 0x08, 0x08, 0x08, 0x08, 0x00, 0x00, 0x60, 0x60, 0x00, 0x20, 0x10, 0x08, 0x04, 0x02,
+            0x3E, 0x51, 0x49, 0x45, 0x3E, 0x00, 0x42, 0x7F, 0x40, 0x00, 0x72, 0x49, 0x49, 0x49, 0x46, 0x21,
+            0x41, 0x49, 0x4D, 0x33, 0x18, 0x14, 0x12, 0x7F, 0x10, 0x27, 0x45, 0x45, 0x45, 0x39, 0x3C, 0x4A,
+            0x49, 0x49, 0x31, 0x41, 0x21, 0x11, 0x09, 0x07, 0x36, 0x49, 0x49, 0x49, 0x36, 0x46, 0x49, 0x49,
+            0x29, 0x1E, 0x00, 0x00, 0x14, 0x00, 0x00, 0x00, 0x40, 0x34, 0x00, 0x00, 0x00, 0x08, 0x14, 0x22,
+            0x41, 0x14, 0x14, 0x14, 0x14, 0x14, 0x00, 0x41, 0x22, 0x14, 0x08, 0x02, 0x01, 0x59, 0x09, 0x06,
+            0x3E, 0x41, 0x5D, 0x59, 0x4E, 0x7C, 0x12, 0x11, 0x12, 0x7C, 0x7F, 0x49, 0x49, 0x49, 0x36, 0x3E,
+            0x41, 0x41, 0x41, 0x22, 0x7F, 0x41, 0x41, 0x41, 0x3E, 0x7F, 0x49, 0x49, 0x49, 0x41, 0x7F, 0x09,
+            0x09, 0x09, 0x01, 0x3E, 0x41, 0x41, 0x51, 0x73, 0x7F, 0x08, 0x08, 0x08, 0x7F, 0x00, 0x41, 0x7F,
+            0x41, 0x00, 0x20, 0x40, 0x41, 0x3F, 0x01, 0x7F, 0x08, 0x14, 0x22, 0x41, 0x7F, 0x40, 0x40, 0x40,
+            0x40, 0x7F, 0x02, 0x1C, 0x02, 0x7F, 0x7F, 0x04, 0x08, 0x10, 0x7F, 0x3E, 0x41, 0x41, 0x41, 0x3E,
+            0x7F, 0x09, 0x09, 0x09, 0x06, 0x3E, 0x41, 0x51, 0x21, 0x5E, 0x7F, 0x09, 0x19, 0x29, 0x46, 0x26,
+            0x49, 0x49, 0x49, 0x32, 0x03, 0x01, 0x7F, 0x01, 0x03, 0x3F, 0x40, 0x40, 0x40, 0x3F, 0x1F, 0x20,
+            0x40, 0x20, 0x1F, 0x3F, 0x40, 0x38, 0x40, 0x3F, 0x63, 0x14, 0x08, 0x14, 0x63, 0x03, 0x04, 0x78,
+            0x04, 0x03, 0x61, 0x59, 0x49, 0x4D, 0x43, 0x00, 0x7F, 0x41, 0x41, 0x41, 0x02, 0x04, 0x08, 0x10,
+            0x20, 0x00, 0x41, 0x41, 0x41, 0x7F, 0x04, 0x02, 0x01, 0x02, 0x04, 0x40, 0x40, 0x40, 0x40, 0x40,
+            0x00, 0x03, 0x07, 0x08, 0x00, 0x20, 0x54, 0x54, 0x78, 0x40, 0x7F, 0x28, 0x44, 0x44, 0x38, 0x38,
+            0x44, 0x44, 0x44, 0x28, 0x38, 0x44, 0x44, 0x28, 0x7F, 0x38, 0x54, 0x54, 0x54, 0x18, 0x00, 0x08,
+            0x7E, 0x09, 0x02, 0x18, 0xA4, 0xA4, 0x9C, 0x78, 0x7F, 0x08, 0x04, 0x04, 0x78, 0x00, 0x44, 0x7D,
+            0x40, 0x00, 0x20, 0x40, 0x40, 0x3D, 0x00, 0x7F, 0x10, 0x28, 0x44, 0x00, 0x00, 0x41, 0x7F, 0x40,
+            0x00, 0x7C, 0x04, 0x78, 0x04, 0x78, 0x7C, 0x08, 0x04, 0x04, 0x78, 0x38, 0x44, 0x44, 0x44, 0x38,
+            0xFC, 0x18, 0x24, 0x24, 0x18, 0x18, 0x24, 0x24, 0x18, 0xFC, 0x7C, 0x08, 0x04, 0x04, 0x08, 0x48,
+            0x54, 0x54, 0x54, 0x24, 0x04, 0x04, 0x3F, 0x44, 0x24, 0x3C, 0x40, 0x40, 0x20, 0x7C, 0x1C, 0x20,
+            0x40, 0x20, 0x1C, 0x3C, 0x40, 0x30, 0x40, 0x3C, 0x44, 0x28, 0x10, 0x28, 0x44, 0x4C, 0x90, 0x90,
+            0x90, 0x7C, 0x44, 0x64, 0x54, 0x4C, 0x44, 0x00, 0x08, 0x36, 0x41, 0x00, 0x00, 0x00, 0x77, 0x00,
+            0x00, 0x00, 0x41, 0x36, 0x08, 0x00, 0x02, 0x01, 0x02, 0x04, 0x02, 0x3C, 0x26, 0x23, 0x26, 0x3C,
+    };
+
     static uint8_t mapInputToArduboyMask_(uint8_t in) {
 #if (INPUT_UP == UP_BUTTON) && (INPUT_DOWN == DOWN_BUTTON) && (INPUT_LEFT == LEFT_BUTTON) && \
     (INPUT_RIGHT == RIGHT_BUTTON) && (INPUT_A == A_BUTTON) && (INPUT_B == B_BUTTON)
@@ -798,13 +1060,45 @@ private:
 
     uint32_t frame_duration_ms_ = 16;
     uint32_t last_frame_ms_ = 0;
-    uint32_t frame_count_ = 0;
 
     uint8_t cur_buttons_ = 0;
     uint8_t prev_buttons_ = 0;
+    int16_t cursor_x_ = 0;
+    int16_t cursor_y_ = 0;
+    uint8_t text_color_ = WHITE;
+    uint8_t text_bg_ = BLACK;
 };
 
 class Arduboy2 : public Arduboy2Base {};
+
+class BeepPin1 {
+public:
+    void begin() {
+        // Audio init/state is controlled by ArduboyAudio in main runtime.
+    }
+
+    uint16_t freq(uint16_t frequency) {
+        return frequency;
+    }
+
+    void tone(uint16_t frequency, uint16_t duration_frames) {
+        if(duration_frames == 0) {
+            tones_.noTone();
+            return;
+        }
+
+        // Arduboy BeepPin1 duration is frame-based (called from timer() each frame).
+        uint32_t duration_ms = ((uint32_t)duration_frames * 1000u + 30u) / 60u;
+        if(duration_ms == 0) duration_ms = 1;
+        tones_.tone(frequency, (uint16_t)duration_ms);
+    }
+
+    void timer() {
+    }
+
+private:
+    ArduboyTones tones_;
+};
 
 class Sprites {
 public:
@@ -812,22 +1106,22 @@ public:
         ab_ = a;
     }
 
-    void drawOverwrite(int16_t x, int16_t y, const uint8_t* bmp, uint8_t frame = 0) {
+    static void drawOverwrite(int16_t x, int16_t y, const uint8_t* bmp, uint8_t frame = 0) {
         if(!ab_ || !bmp) return;
         ab_->drawSolidBitmapFrame(x, y, bmp, frame);
     }
 
-    void drawSelfMasked(int16_t x, int16_t y, const uint8_t* bmp, uint8_t frame = 0) {
+    static void drawSelfMasked(int16_t x, int16_t y, const uint8_t* bmp, uint8_t frame = 0) {
         if(!ab_ || !bmp) return;
         ab_->drawBitmapFrame(x, y, bmp, frame);
     }
 
-    void drawErase(int16_t x, int16_t y, const uint8_t* bmp, uint8_t frame = 0) {
+    static void drawErase(int16_t x, int16_t y, const uint8_t* bmp, uint8_t frame = 0) {
         if(!ab_ || !bmp) return;
         ab_->eraseBitmapFrame(x, y, bmp, frame);
     }
 
-    void drawPlusMask(int16_t x, int16_t y, const uint8_t* plusmask, uint8_t frame = 0) {
+    static void drawPlusMask(int16_t x, int16_t y, const uint8_t* plusmask, uint8_t frame = 0) {
         if(!ab_) return;
         ab_->drawPlusMask(x, y, plusmask, frame);
     }

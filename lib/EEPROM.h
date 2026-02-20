@@ -11,7 +11,7 @@
 class EEPROMClass {
 public:
     // GAME_ID marker (1 byte) + Player payload (56 bytes).
-    static constexpr int kSize = 57;
+    static constexpr int kSize = 1024;
     // Absolute path buffer size (compile-time fixed).
     static constexpr size_t kPathSize = 128;
     static constexpr int kLegacyStart = 16;
@@ -37,6 +37,10 @@ public:
         ensureLoaded_();
         if(addr < 0 || addr >= kSize) return 0;
         return mem_[addr];
+    }
+
+    uint8_t operator[](int addr) const {
+        return read(addr);
     }
 
     void write(int addr, uint8_t value) {
