@@ -2235,6 +2235,18 @@ Game game;
 
 Arduboy2 arduboy;
 
+bool microtd_handle_back_long()
+{
+  if (game.mState == STATE_MENU)
+    return true; // long Back in main menu exits app
+
+  // long Back in gameplay returns to main menu
+  game.mState = STATE_MENU;
+  game.mSelectedMenuItem = game.mMapNumber < MAPS_TOTAL ? game.mMapNumber : 0;
+  game.mCheat = CHEAT_NONE;
+  return false;
+}
+
 void drawConfirmDialog()
 {
   const uint8_t padding = 10;

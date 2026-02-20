@@ -137,7 +137,7 @@ public:
             rect2.y >= rect1.y + rect1.height || rect2.y + rect2.height <= rect1.y);
     }
 
-    static void FlipperInputCallback(InputEvent* event, void* ctx_ptr) {
+    static void FlipperInputCallback(const InputEvent* event, void* ctx_ptr) {
         if(!event || !ctx_ptr) return;
         InputContext* ctx = (InputContext*)ctx_ptr;
         volatile uint8_t* st = ctx->input_state;
@@ -158,19 +158,19 @@ public:
             bit = INPUT_RIGHT;
             break;
         case InputKeyOk:
-            bit = INPUT_B;
+            bit = INPUT_A;
             break;
         case InputKeyBack:
-            bit = INPUT_A;
+            bit = INPUT_B;
             break;
         default:
             return;
         }
 
         if(event->type == InputTypePress) {
-            *st = (uint8_t)(*st | bit);
+            (void)__atomic_fetch_or((uint8_t*)st, bit, __ATOMIC_RELAXED);
         } else if(event->type == InputTypeRelease) {
-            *st = (uint8_t)(*st & (uint8_t)~bit);
+            (void)__atomic_fetch_and((uint8_t*)st, (uint8_t)~bit, __ATOMIC_RELAXED);
         }
     }
 
@@ -206,7 +206,14 @@ public:
 
     void pollButtons() {
         prev_buttons_ = cur_buttons_;
-        cur_buttons_ = mapInputToArduboyMask_(input_state_ ? *input_state_ : 0);
+        const uint8_t in =
+            input_state_ ? __atomic_load_n((uint8_t*)input_state_, __ATOMIC_RELAXED) : 0;
+        cur_buttons_ = mapInputToArduboyMask_(in);
+    }
+
+    void clearButtonState() {
+        prev_buttons_ = 0;
+        cur_buttons_ = 0;
     }
 
     bool pressed(uint8_t mask) const {

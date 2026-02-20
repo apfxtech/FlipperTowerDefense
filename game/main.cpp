@@ -3,14 +3,13 @@
 #include <gui/gui.h>
 #include <input/input.h>
 
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "lib/Arduboy2.h"
-#include "lib/Arduino.h"
-#include "lib/EEPROM.h"
-
-#define TARGET_FRAMERATE 60
+#include "../lib/Arduboy2.h"
+#include "../lib/Arduino.h"
+#include "../lib/EEPROM.h"
 
 #define DISPLAY_WIDTH  128
 #define DISPLAY_HEIGHT 64
@@ -22,7 +21,6 @@ typedef struct {
 
     Gui* gui;
     Canvas* canvas;
-    FuriTimer* timer;
     FuriMutex* fb_mutex;
     FuriMutex* game_mutex;
     FuriPubSub* input_events;
@@ -30,11 +28,13 @@ typedef struct {
 
     volatile uint8_t input_state;
     volatile bool exit_requested;
-    volatile bool in_frame;
+    volatile bool back_long_requested;
+    volatile bool back_long_latched;
 } FlipperState;
 
 extern void setup();
 extern void loop();
+extern bool microtd_handle_back_long();
 extern Arduboy2 arduboy;
 
 static FlipperState* g_state = NULL;
@@ -49,8 +49,9 @@ static void framebuffer_commit_callback(
     (void)orientation;
 
     if(furi_mutex_acquire(state->fb_mutex, 0) != FuriStatusOk) return;
+    const uint8_t* src = state->front_buffer;
     for(size_t i = 0; i < BUFFER_SIZE; i++) {
-        data[i] = (uint8_t)(state->front_buffer[i] ^ 0xFF);
+        data[i] = (uint8_t)(src[i] ^ 0xFF);
     }
     furi_mutex_release(state->fb_mutex);
 }
@@ -61,35 +62,23 @@ static void input_events_callback(const void* value, void* ctx) {
     FlipperState* state = (FlipperState*)ctx;
     const InputEvent* event = (const InputEvent*)value;
 
-    if(event->key == InputKeyBack && event->type == InputTypeLong) {
-        state->exit_requested = true;
-        return;
+    if(event->key == InputKeyBack) {
+        if(event->type == InputTypeLong) {
+            if(!state->back_long_latched) {
+                state->back_long_requested = true;
+                state->back_long_latched = true;
+                (void)__atomic_fetch_and(
+                    (uint8_t*)&state->input_state, (uint8_t)~INPUT_B, __ATOMIC_RELAXED);
+            }
+            return;
+        }
+
+        if(event->type == InputTypeRelease) {
+            state->back_long_latched = false;
+        }
     }
 
-    InputEvent copy = *event;
-    Arduboy2Base::FlipperInputCallback(&copy, arduboy.inputContext());
-}
-
-static void timer_callback(void* ctx) {
-    FlipperState* state = (FlipperState*)ctx;
-    if(!state || state->in_frame) return;
-    state->in_frame = true;
-
-    if(furi_mutex_acquire(state->game_mutex, 0) != FuriStatusOk) {
-        state->in_frame = false;
-        return;
-    }
-
-    loop();
-
-    furi_mutex_acquire(state->fb_mutex, FuriWaitForever);
-    memcpy(state->front_buffer, state->screen_buffer, BUFFER_SIZE);
-    furi_mutex_release(state->fb_mutex);
-
-    if(state->canvas) canvas_commit(state->canvas);
-
-    furi_mutex_release(state->game_mutex);
-    state->in_frame = false;
+    Arduboy2Base::FlipperInputCallback(event, arduboy.inputContext());
 }
 
 extern "C" int32_t arduboy_app(void* p) {
@@ -103,15 +92,16 @@ extern "C" int32_t arduboy_app(void* p) {
     memset(g_state, 0, sizeof(FlipperState));
 
     do {
-        g_state->fb_mutex = furi_mutex_alloc(FuriMutexTypeNormal);
         g_state->game_mutex = furi_mutex_alloc(FuriMutexTypeNormal);
-        if(!g_state->fb_mutex || !g_state->game_mutex) break;
+        g_state->fb_mutex = furi_mutex_alloc(FuriMutexTypeNormal);
+        if(!g_state->game_mutex || !g_state->fb_mutex) break;
 
+        g_state->exit_requested = false;
+        g_state->back_long_requested = false;
+        g_state->back_long_latched = false;
+        g_state->input_state = 0;
         memset(g_state->screen_buffer, 0x00, BUFFER_SIZE);
         memset(g_state->front_buffer, 0x00, BUFFER_SIZE);
-        g_state->input_state = 0;
-        g_state->exit_requested = false;
-        g_state->in_frame = false;
 
         arduboy.begin(
             g_state->screen_buffer,
@@ -136,39 +126,59 @@ extern "C" int32_t arduboy_app(void* p) {
             furi_pubsub_subscribe(g_state->input_events, input_events_callback, g_state);
         if(!g_state->input_sub) break;
 
-        furi_mutex_acquire(g_state->game_mutex, FuriWaitForever);
+        if(furi_mutex_acquire(g_state->game_mutex, FuriWaitForever) != FuriStatusOk) break;
         arduboy.audio.begin();
         EEPROM.begin();
         setup();
-        furi_mutex_acquire(g_state->fb_mutex, FuriWaitForever);
-        memcpy(g_state->front_buffer, g_state->screen_buffer, BUFFER_SIZE);
-        furi_mutex_release(g_state->fb_mutex);
-        if(g_state->canvas) canvas_commit(g_state->canvas);
+
+        if(furi_mutex_acquire(g_state->fb_mutex, FuriWaitForever) == FuriStatusOk) {
+            memcpy(g_state->front_buffer, g_state->screen_buffer, BUFFER_SIZE);
+            furi_mutex_release(g_state->fb_mutex);
+        }
         furi_mutex_release(g_state->game_mutex);
 
-        g_state->timer = furi_timer_alloc(timer_callback, FuriTimerTypePeriodic, g_state);
-        if(!g_state->timer) break;
-
-        const uint32_t tick_hz = furi_kernel_get_tick_frequency();
-        uint32_t period = (tick_hz + (TARGET_FRAMERATE / 2)) / TARGET_FRAMERATE;
-        if(period == 0) period = 1;
-        furi_timer_start(g_state->timer, period);
+        if(g_state->canvas) canvas_commit(g_state->canvas);
 
         while(!g_state->exit_requested) {
-            furi_delay_ms(50);
+            if(furi_mutex_acquire(g_state->game_mutex, 0) == FuriStatusOk) {
+                if(g_state->back_long_requested) {
+                    g_state->back_long_requested = false;
+                    const bool should_exit = microtd_handle_back_long();
+
+                    __atomic_store_n((uint8_t*)&g_state->input_state, 0, __ATOMIC_RELAXED);
+                    arduboy.clearButtonState();
+
+                    if(should_exit) {
+                        g_state->exit_requested = true;
+                    }
+                }
+
+                const uint32_t frame_before = arduboy.frameCount;
+                if(!g_state->exit_requested) {
+                    loop();
+                }
+                const uint32_t frame_after = arduboy.frameCount;
+
+                if(frame_after != frame_before) {
+                    if(furi_mutex_acquire(g_state->fb_mutex, 0) == FuriStatusOk) {
+                        memcpy(g_state->front_buffer, g_state->screen_buffer, BUFFER_SIZE);
+                        furi_mutex_release(g_state->fb_mutex);
+                    }
+                }
+
+                furi_mutex_release(g_state->game_mutex);
+            }
+
+            if(g_state->canvas) canvas_commit(g_state->canvas);
+            furi_delay_ms(1);
         }
 
         rc = 0;
     } while(false);
 
+    arduboy.audio.saveOnOff();
     EEPROM.commit();
     arduboy_tone_sound_system_deinit();
-
-    if(g_state->timer) {
-        furi_timer_stop(g_state->timer);
-        furi_timer_free(g_state->timer);
-        g_state->timer = NULL;
-    }
 
     if(g_state->input_sub && g_state->input_events) {
         furi_pubsub_unsubscribe(g_state->input_events, g_state->input_sub);
@@ -192,13 +202,13 @@ extern "C" int32_t arduboy_app(void* p) {
         g_state->gui = NULL;
     }
 
-    if(g_state->fb_mutex) {
-        furi_mutex_free(g_state->fb_mutex);
-        g_state->fb_mutex = NULL;
-    }
     if(g_state->game_mutex) {
         furi_mutex_free(g_state->game_mutex);
         g_state->game_mutex = NULL;
+    }
+    if(g_state->fb_mutex) {
+        furi_mutex_free(g_state->fb_mutex);
+        g_state->fb_mutex = NULL;
     }
 
     free(g_state);
