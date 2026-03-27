@@ -1,0 +1,9 @@
+sourcecode:
+  type: git
+  location:
+    origin: https://github.com/apfxtech/FlipperTowerDefense.git
+    commit_sha: 2265022911426811c2fc26b0e257fb425d78e935
+
+short_description: Tower defense game ported to Flipper Zero.
+description: "@APPSTORE.md"
+changelog: "@CHANGELOG.md"
