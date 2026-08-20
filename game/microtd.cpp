@@ -1,5 +1,5 @@
 /**
-  @file   microtd.ino
+  @file   microtd.cpp
   @author Miloslav Ciz
   @brief  tower defense game for Arduboy
 
@@ -9,33 +9,20 @@
 
   Miloslav "drummyfish" Ciz, 2018, license: CC0 (public domain)
 
-  This file can be compiled both with Arduino IDE for the final release, or
-  with gcc (or maybe even other compiler) for quick debug/tests on the PC.
+  Ported to Flipper Zero by apfxtech, 2026. Changes made to this file are
+  released under CC0 as well, so the game code stays public domain.
+
+  SPDX-License-Identifier: CC0-1.0
 */
 
-#ifdef ARDUINO
-  #include <stdint.h>
-  #include "lib/Arduboy2.h"
-#else
-  // for the PC
-  #include <iostream>
-  #include <string>
-  #include <string.h>
-  #include <cstdint>
-  using namespace std;
+#include <stdint.h>
+#include <stdlib.h>
 
-  #define PROGMEM 
+#include "microtd.h"
+#include "render.h"
 
-  #define A_BUTTON             0
-  #define B_BUTTON             1
-  #define UP_BUTTON            2
-  #define RIGHT_BUTTON         3
-  #define LEFT_BUTTON          4
-  #define DOWN_BUTTON          5
-
-  #define min(x,y) ((x) < (y) ? (x) : (y))
-  #define max(x,y) ((x) > (y) ? (x) : (y))
-#endif
+#define min(x,y) ((x) < (y) ? (x) : (y))
+#define max(x,y) ((x) > (y) ? (x) : (y))
 
 #define DISPLAY_WIDTH          128
 #define DISPLAY_HEIGHT         64
@@ -191,39 +178,7 @@ typedef uint8_t IndexPointer; ///< Array index, used instead of pointers (smalle
 typedef uint8_t GameState;
 typedef uint8_t MenuItemState;
 
-#ifdef ARDUINO
-BeepPin1 beep1;
-
-void playSound(IndexPointer sound)
-{
-  switch (sound)
-  {
-    case SOUND_PUT:
-      beep1.tone(beep1.freq(532),2);
-      break;
-
-    case SOUND_FALL:
-      beep1.tone(beep1.freq(293),2);
-      break;
-
-    case SOUND_BAD:
-      beep1.tone(beep1.freq(185),5);
-      break;
-
-    case SOUND_LOST:
-      beep1.tone(beep1.freq(110),15);
-      break;
-
-    default:
-      break;
-  }
-}
-#else
-void playSound(IndexPointer sound)
-{
-  cout << "playing sound: " << sound << endl;
-}
-#endif
+void playSound(IndexPointer sound);
 
 // A function is a simple way to store strings in PROGMEM :)
 void getUpgradeName(IndexPointer upgrade, char *dst)
@@ -262,13 +217,13 @@ void getUpgradeName(IndexPointer upgrade, char *dst)
 }
 
 /// 8 x 8 dithering pattern.
-const uint8_t PROGMEM ditherImage[] =
+const uint8_t ditherImage[] =
 {
 0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55
 };
 
 /// 15 x 5 wave decoration image.
-const uint8_t PROGMEM waveImage[] =
+const uint8_t waveImage[] =
 {
 0x19, 0x1c, 0x1c, 0x1c, 0x1c, 0x19,
 0x13, 0x13, 0x07, 0x07, 0x07, 0x07,
@@ -276,7 +231,7 @@ const uint8_t PROGMEM waveImage[] =
 };
 
 /// 25 x 18 logo image
-const uint8_t PROGMEM logoImage[] =
+const uint8_t logoImage[] =
 {
 0xf7, 0x63, 0xb7, 0x5f, 0x5b, 0x41, 0x40, 0x41, 0x5b, 0x5f, 0x58, 0x41, 0x40,
 0x41, 0x58, 0x5f, 0x5b, 0x41, 0x40, 0x41, 0x5b, 0x5f, 0xaf, 0x47, 0xef, 0x80,
@@ -287,7 +242,7 @@ const uint8_t PROGMEM logoImage[] =
 };
 
 /// 8 x 8 map tiles, correspond to TILE_x tile types (NOT including TILE_TOWER)
-const uint8_t PROGMEM tileImages[] =
+const uint8_t tileImages[] =
 {
 #if 0 // change to 0/1 for an alternate tileset!
 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, // TILE_EMPTY 
@@ -323,7 +278,7 @@ const uint8_t PROGMEM tileImages[] =
 };
 
 /// 8 x 8 creep images, correspond to CREEP_x constants.
-const uint8_t PROGMEM creepSprites[] =
+const uint8_t creepSprites[] =
 {
 8,8,  // width, height
 0x00, 0x00, 0x00, 0x54, 0x00, 0x7c, 0x00, 0x38, // CREEP_SPIDER 
@@ -351,7 +306,7 @@ const uint8_t PROGMEM creepSprites[] =
 };
 
 /// 8 x 8 tower images.
-const uint8_t PROGMEM towerSmallImages[] = 
+const uint8_t towerSmallImages[] = 
 {
 0xff, 0xe7, 0x83, 0x81, 0x81, 0x83, 0xe7, 0xff, // TOWER_GUARD full  
 0xff, 0xe7, 0x8b, 0x8d, 0x8d, 0x8b, 0xe7, 0xff, // TOWER_GUARD upgrade 1
@@ -374,7 +329,7 @@ const uint8_t PROGMEM towerSmallImages[] =
 };
 
 /// 16 x 16 tower images.
-const uint8_t PROGMEM towerBigSprites[] = 
+const uint8_t towerBigSprites[] = 
 {
 16,16, // width, height
 0xff, 0xff, 0x3f, 0x3f, 0x87, 0x93, 0xb9, 0xe5, // TOWER_WATER
@@ -396,7 +351,7 @@ const uint8_t PROGMEM towerBigSprites[] =
 };
 
 /// Menu item 8 x 8 icons.
-const uint8_t PROGMEM menuIcons[] =
+const uint8_t menuIcons[] =
 {
 0xff, 0xc3, 0x99, 0xe5, 0xe5, 0x99, 0xc3, 0xff, // water tower 
 0xff, 0xc1, 0x99, 0xf3, 0xf3, 0x99, 0xc1, 0xff, // fire tower
@@ -1490,7 +1445,7 @@ struct Game
     switch (mState)
     {
       case STATE_PLAYING_BUILDING:
-        if (button == A_BUTTON)
+        if (button == MICROTD_A)
         {
           mState = STATE_PLAYING_MENU;
 
@@ -1512,19 +1467,19 @@ struct Game
       case STATE_PLAYING_WAVE:
         switch (button)
         {
-          case DOWN_BUTTON:
+          case MICROTD_DOWN:
             mCursor.mY = min(mCursor.mY + 1, TILES_Y - 1);
             break;
 
-          case UP_BUTTON:
+          case MICROTD_UP:
             mCursor.mY = mCursor.mY == 0 ? 0 : mCursor.mY - 1;
             break;
 
-          case RIGHT_BUTTON:
+          case MICROTD_RIGHT:
             mCursor.mX = min(mCursor.mX + 1, TILES_X - 1);
             break;
 
-          case LEFT_BUTTON:
+          case MICROTD_LEFT:
             mCursor.mX = mCursor.mX == 0 ? 0 : mCursor.mX - 1;
             break;
 
@@ -1537,20 +1492,20 @@ struct Game
       case STATE_PLAYING_MENU:
         switch (button)
         {
-          case A_BUTTON:
+          case MICROTD_A:
             gameMenuConfirm();
             break;          
 
-          case B_BUTTON:
+          case MICROTD_B:
             mState = STATE_PLAYING_BUILDING;
             mSelectedMenuItem = 0;
             break;          
 
-          case RIGHT_BUTTON:
+          case MICROTD_RIGHT:
             mSelectedMenuItem = (mSelectedMenuItem + 1) % 13;
             break;
 
-          case LEFT_BUTTON:
+          case MICROTD_LEFT:
             mSelectedMenuItem =
               mSelectedMenuItem == 0 ? 12 : mSelectedMenuItem - 1;
             break;
@@ -1564,17 +1519,17 @@ struct Game
       case STATE_MENU:
         switch (button)
         {
-          case RIGHT_BUTTON:
+          case MICROTD_RIGHT:
             mSelectedMenuItem = (mSelectedMenuItem + 1) % MAIN_MENU_ITEMS;
             break;
 
-          case LEFT_BUTTON:
+          case MICROTD_LEFT:
             mSelectedMenuItem =
               mSelectedMenuItem == 0 ? (MAIN_MENU_ITEMS - 1) :
                 mSelectedMenuItem - 1;
             break;
 
-          case A_BUTTON:
+          case MICROTD_A:
             if (mSelectedMenuItem < MAPS_TOTAL)
             {
               // new map
@@ -1593,7 +1548,10 @@ struct Game
               mState = STATE_PLAYING_BUILDING;
             }
             else if (mSelectedMenuItem == MAPS_TOTAL)
+            {
               mSound = !mSound;
+              playSound(SOUND_PUT);
+            }
 
             break;
 
@@ -1604,11 +1562,11 @@ struct Game
         break;
 
       case STATE_CONFIRM:
-        if (button == B_BUTTON)
+        if (button == MICROTD_B)
         {
           mState = STATE_PLAYING_MENU;
         }
-        else if (button == A_BUTTON)
+        else if (button == MICROTD_A)
         {
           if (mSelectedMenuItem == GAME_MENU_QUIT)
           {
@@ -1630,7 +1588,7 @@ struct Game
         break;
 
       case STATE_GAME_OVER:
-        if (button == A_BUTTON || button == B_BUTTON)
+        if (button == MICROTD_A || button == MICROTD_B)
         {
           if (isRecord())
             mRecords[mMapNumber] = mRound;
@@ -2229,16 +2187,115 @@ struct Game
 
 Game game;
 
-#ifdef ARDUINO
+void playSound(IndexPointer sound)
+{
+  if (!game.mSound)
+    return;
 
-// ========= Arduboy code only ==========
+  switch (sound)
+  {
+    case SOUND_PUT:
+      platform_tone(532,2);
+      break;
 
-bool microtd_handle_back_long()
+    case SOUND_FALL:
+      platform_tone(293,2);
+      break;
+
+    case SOUND_BAD:
+      platform_tone(185,5);
+      break;
+
+    case SOUND_LOST:
+      platform_tone(110,15);
+      break;
+
+    default:
+      break;
+  }
+}
+
+static uint8_t buttonsHeld = 0;
+static uint8_t buttonsPrev = 0;
+static uint8_t buttonsPressed = 0;
+static uint8_t buttonRepeatCounter = BUTTON_REPEAT_DELAY;
+static uint32_t frameCounter = 0;
+static bool recordWritten = false;
+static bool saveDirty = false;
+
+static char* appendChar(char *dst, char c)
+{
+  *dst++ = c;
+  *dst = 0;
+  return dst;
+}
+
+static char* appendStr(char *dst, const char *src)
+{
+  while (*src)
+    *dst++ = *src++;
+
+  *dst = 0;
+  return dst;
+}
+
+static void copyTrimmed(char *dst, const char *src)
+{
+  while (*src == ' ')
+    src++;
+
+  uint8_t length = 0;
+  while (src[length])
+    length++;
+
+  while (length && src[length - 1] == ' ')
+    length--;
+
+  for (uint8_t i = 0; i < length; ++i)
+    dst[i] = src[i];
+
+  dst[length] = 0;
+}
+
+static char* appendNum(char *dst, uint16_t value)
+{
+  char digits[6];
+  uint8_t length = 0;
+
+  do
+  {
+    digits[length++] = (char) ('0' + (value % 10));
+    value /= 10;
+  } while (value);
+
+  while (length)
+    *dst++ = digits[--length];
+
+  *dst = 0;
+  return dst;
+}
+
+static inline bool pressed(uint8_t button)
+{
+  return (buttonsHeld & button) != 0;
+}
+
+static inline bool justPressed(uint8_t button)
+{
+  return ((buttonsPressed & button) != 0) ||
+    (((buttonsHeld & button) != 0) && ((buttonsPrev & button) == 0));
+}
+
+static inline bool justReleased(uint8_t button)
+{
+  return ((buttonsHeld & button) == 0) && ((buttonsPrev & button) != 0);
+}
+
+bool microtd_back_long()
 {
   if (game.mState == STATE_MENU)
-    return true; // long Back in main menu exits app
+    return true;
 
-  // long Back in gameplay returns to main menu
   game.mState = STATE_MENU;
   game.mSelectedMenuItem = game.mMapNumber < MAPS_TOTAL ? game.mMapNumber : 0;
   game.mCheat = CHEAT_NONE;
@@ -2249,83 +2306,59 @@ void drawConfirmDialog()
 {
   const uint8_t padding = 10;
 
-  arduboy.fillRect(padding,padding,DISPLAY_WIDTH - 2 * padding,
-    DISPLAY_HEIGHT - 2 * padding,WHITE);
+  gfx_fill_rect(padding,padding,DISPLAY_WIDTH - 2 * padding,
+    DISPLAY_HEIGHT - 2 * padding,GfxLight);
 
-  arduboy.drawRect(padding,padding,DISPLAY_WIDTH - 2 * padding,
-    DISPLAY_HEIGHT - 2 * padding,BLACK);
- 
-  arduboy.setTextColor(BLACK);
-  arduboy.setTextBackground(WHITE);
+  gfx_rect(padding,padding,DISPLAY_WIDTH - 2 * padding,
+    DISPLAY_HEIGHT - 2 * padding,GfxDark);
 
-  arduboy.setCursor(padding + 8, padding + 18);
-
-  arduboy.print(F("Really? A=y B=n"));
+  gfx_text_centered(DISPLAY_WIDTH / 2,padding + 18,"Really? OK=y Back=n",GfxDark);
 }
 
 void drawMenu()
 {
-  arduboy.fillRect(0,0,DISPLAY_WIDTH,DISPLAY_HEIGHT,WHITE);
+  gfx_clear(GfxLight);
 
-  arduboy.fillRect(LOGO_X,LOGO_Y,25,18,BLACK);
-  arduboy.drawBitmap(LOGO_X,LOGO_Y,logoImage,25,18,WHITE);
+  gfx_fill_rect(LOGO_X,LOGO_Y,25,18,GfxDark);
+  gfx_bitmap(LOGO_X,LOGO_Y,logoImage,25,18,GfxLight);
 
   const uint8_t margin = 10;
 
-  Sprites::drawOverwrite(LOGO_X - TILE_WIDTH * 2 - margin,LOGO_Y,
-    towerBigSprites,0);
+  gfx_sprite(LOGO_X - TILE_WIDTH * 2 - margin,LOGO_Y,towerBigSprites,0);
+  gfx_sprite(LOGO_X + 25 + margin,LOGO_Y,towerBigSprites,2);
 
-  Sprites::drawOverwrite(LOGO_X + 25 + margin,LOGO_Y,towerBigSprites,2);
-
-  // draw decoration wave
-
-  arduboy.fillRect(0,28,DISPLAY_WIDTH,5,BLACK);
+  gfx_fill_rect(0,28,DISPLAY_WIDTH,5,GfxDark);
 
   for (uint8_t i = 0; i < DISPLAY_WIDTH / 15 + 2; ++i)
-    arduboy.drawBitmap(i * 15 - game.mFrame % 15,28,waveImage,15,5,WHITE);
+    gfx_bitmap(i * 15 - game.mFrame % 15,28,waveImage,15,5,GfxLight);
 
   MainMenuItem item = game.getMainMenuItem(game.mSelectedMenuItem);
 
-  arduboy.fillRect(0,38,DISPLAY_WIDTH,11,BLACK);
+  gfx_fill_rect(0,38,DISPLAY_WIDTH,11,GfxDark);
 
-  arduboy.setTextColor(WHITE);
-  arduboy.setTextBackground(BLACK);
-  arduboy.setCursor(22,40);
+  char line[24];
+  copyTrimmed(line,item.mText);
 
-  arduboy.write('<');
-  arduboy.write(' ');
-  arduboy.print(item.mText);
-  arduboy.write(' ');
-  arduboy.write('>');
+  gfx_text(22,40,"<",GfxLight);
+  gfx_text_centered(DISPLAY_WIDTH / 2,40,line,GfxLight);
+  gfx_text(DISPLAY_WIDTH - 22 - gfx_text_width(">"),40,">",GfxLight);
 
-  arduboy.setTextColor(BLACK);
-  arduboy.setTextBackground(WHITE);
-  arduboy.setCursor(2,55);
-  arduboy.print(item.mSubText);
+  gfx_text(2,55,item.mSubText,GfxDark);
 
   if (game.mCheat != CHEAT_NONE && (game.mFrame / 4) % 2 == 0)
-  {
-    arduboy.setCursor(47,26);
-    arduboy.print(F("cheat!"));
-  }
+    gfx_text_centered(DISPLAY_WIDTH / 2,26,"cheat!",GfxDark);
 }
 
 void drawGameOver()
 {
-  arduboy.fillRect(0,0,DISPLAY_WIDTH,DISPLAY_HEIGHT,WHITE);
+  gfx_clear(GfxLight);
 
-  arduboy.setTextColor(BLACK);
-  arduboy.setTextBackground(WHITE);
-  arduboy.setCursor(20,10);
+  char line[24];
+  appendNum(appendStr(line,"game over at "),game.mRound);
+  gfx_text_centered(DISPLAY_WIDTH / 2,10,line,GfxDark);
 
-  arduboy.print(F("game over at "));
-  arduboy.print(game.mRound);
-
-  if (game.isRecord())
-  {
-    arduboy.setCursor(20,20);
-    arduboy.print(F("new record!"));
-  }
+  if (game.isRecord() || recordWritten)
+    gfx_text_centered(DISPLAY_WIDTH / 2,20,"new record!",GfxDark);
 }
 
 void drawMap()
@@ -2370,7 +2403,7 @@ void drawMap()
         {
           // big (2 x 2 tiles) tower
 
-          Sprites::drawOverwrite(
+          gfx_sprite(
             (x - 1) * TILE_WIDTH,
             (y - 1) * TILE_HEIGHT,
             towerBigSprites,
@@ -2383,27 +2416,27 @@ void drawMap()
 
           for (uint8_t i = 0; i < 3; ++i)
             if (i == 0 || !t->mTower.upgraded(i == 1 ? 0 : 1))
-              arduboy.drawBitmap(
+              gfx_bitmap(
                 x * TILE_WIDTH,
                 y * TILE_HEIGHT,
                 towerSmallImages + ((uint16_t) tt.mSprite) * TILE_SIZE * 3 +
                   i * TILE_SIZE,
                 TILE_WIDTH,
                 TILE_HEIGHT,
-                WHITE);
+                GfxLight);
         }
       } 
       else
       {
         // non-tower tile
 
-        arduboy.drawBitmap(
+        gfx_bitmap(
           x * TILE_WIDTH,
           y * TILE_HEIGHT,
           tileImages + t->mType * TILE_SIZE,
           TILE_WIDTH,
           TILE_HEIGHT,
-          WHITE);
+          GfxLight);
       }
     }
 
@@ -2441,26 +2474,26 @@ void drawMap()
             case TOWER_GUARD:
               // arrow
               if (absDiff(selfPos.mX,p.mX) > absDiff(selfPos.mY,p.mY))
-                arduboy.drawFastHLine(projX,projY,2,BLACK);
+                gfx_hline(projX,projY,2,GfxDark);
               else
-                arduboy.drawFastVLine(projX,projY,2,BLACK);
+                gfx_vline(projX,projY,2,GfxDark);
 
               break;
 
             case TOWER_CANNON:
               // cannon ball
 
-              arduboy.drawFastVLine(projX - 1,projY,2,BLACK);
-              arduboy.drawFastVLine(projX,    projY,2,BLACK);
+              gfx_vline(projX - 1,projY,2,GfxDark);
+              gfx_vline(projX,    projY,2,GfxDark);
               break;
 
             case TOWER_ICE:
               // ice
-              arduboy.drawPixel(projX,projY,BLACK);
-              arduboy.drawPixel(projX + 1,projY + 1,BLACK);
-              arduboy.drawPixel(projX - 1,projY + 1,BLACK);
-              arduboy.drawPixel(projX + 1,projY - 1,BLACK);
-              arduboy.drawPixel(projX - 1,projY - 1,BLACK);
+              gfx_pixel(projX,projY,GfxDark);
+              gfx_pixel(projX + 1,projY + 1,GfxDark);
+              gfx_pixel(projX - 1,projY + 1,GfxDark);
+              gfx_pixel(projX + 1,projY - 1,GfxDark);
+              gfx_pixel(projX - 1,projY - 1,GfxDark);
               break;
 
             case TOWER_SNIPER:
@@ -2468,28 +2501,28 @@ void drawMap()
               // bullet
               uint8_t x2 = interpolateBytes(projX,selfPos.mX,25);
               uint8_t y2 = interpolateBytes(projY,selfPos.mY,25);
-              arduboy.drawLine(projX,projY,x2,y2,BLACK);
+              gfx_line(projX,projY,x2,y2,GfxDark);
               break;
             }
 
             case TOWER_MAGIC:
               // spell
-              arduboy.drawCircle(projX,projY,1,BLACK);
+              gfx_circle(projX,projY,1,GfxDark);
               break;
 
             case TOWER_ELECTRO:
               // lightning
 
               if (attackPercentage < 50)
-                arduboy.drawLine(selfPos.mX,selfPos.mY,
-                  p.mX -1 + game.mFrame % 3,p.mY -1 + game.mFrame % 4,BLACK);
+                gfx_line(selfPos.mX,selfPos.mY,
+                  p.mX -1 + game.mFrame % 3,p.mY -1 + game.mFrame % 4,GfxDark);
 
               break;
 
             case TOWER_WATER:
               //water
 
-              arduboy.fillCircle(projX,projY,attackProgress / 2 + 1,BLACK);
+              gfx_disc(projX,projY,attackProgress / 2 + 1,GfxDark);
 
               break;
 
@@ -2498,9 +2531,9 @@ void drawMap()
               // fire
 
               for (uint8_t i = 0; i < (attackProgress + 1) * 3; ++i)
-                arduboy.drawPixel(
+                gfx_pixel(
                   projX - 2 + rand() % (attackProgress + 2),
-                  projY - 2 + rand() % (attackProgress + 2), BLACK);
+                  projY - 2 + rand() % (attackProgress + 2), GfxDark);
 
               break;
             }
@@ -2524,7 +2557,7 @@ void drawMap()
       CreepType ct = creep->getType();
       uint8_t bob = (creep->getPosition() >> 2) % 2;
 
-      Sprites::drawPlusMask(
+      gfx_sprite_masked(
         p.mX - TILE_WIDTH_HALF, p.mY - TILE_HEIGHT_HALF + bob,
         creepSprites,ct.mSprite);
     }
@@ -2535,52 +2568,43 @@ void drawMap()
   BytePosition corner(
     game.mCursor.mX * TILE_WIDTH,game.mCursor.mY * TILE_HEIGHT);
 
-  arduboy.drawRect(corner.mX,corner.mY,TILE_WIDTH,TILE_HEIGHT,BLACK);
+  gfx_rect(corner.mX,corner.mY,TILE_WIDTH,TILE_HEIGHT,GfxDark);
 
   for (uint8_t i = 0; i < TILE_WIDTH; ++i)
   {
     if (((game.mFrame >> 3) + i) % 3 == 0)
     {
-      arduboy.drawPixel(corner.mX + i,corner.mY,WHITE);
-      arduboy.drawPixel(corner.mX + TILE_WIDTH - 1,corner.mY + i,WHITE);
-      arduboy.drawPixel(corner.mX + TILE_WIDTH - i,corner.mY + TILE_HEIGHT - 1,
-        WHITE);
-      arduboy.drawPixel(corner.mX,corner.mY + TILE_HEIGHT - i,WHITE);
+      gfx_pixel(corner.mX + i,corner.mY,GfxLight);
+      gfx_pixel(corner.mX + TILE_WIDTH - 1,corner.mY + i,GfxLight);
+      gfx_pixel(corner.mX + TILE_WIDTH - i,corner.mY + TILE_HEIGHT - 1,
+        GfxLight);
+      gfx_pixel(corner.mX,corner.mY + TILE_HEIGHT - i,GfxLight);
     }
   }
 
-  if (game.mState == STATE_PLAYING_MENU || !arduboy.pressed(B_BUTTON))
+  if (game.mState == STATE_PLAYING_MENU || !pressed(MICROTD_B))
   {
     // draw the infobar
 
     uint8_t y = (game.mState != STATE_PLAYING_MENU && game.mCursor.mY < 1) ?
       DISPLAY_HEIGHT - INFOBAR_Y - 7 : INFOBAR_Y;
 
-    arduboy.setTextColor(BLACK);
-    arduboy.setTextBackground(WHITE);
-
-    arduboy.setCursor(1,y);
-    arduboy.write('$');
+    char field[12];
 
     if (game.mCheat == CHEAT_MONEY)
-    {
-      arduboy.write('!');
-      arduboy.write('!');
-      arduboy.write('!');
-    }
+      appendStr(appendChar(field,'$'),"!!!");
     else
-      arduboy.print(game.mMoney);
+      appendNum(appendChar(field,'$'),game.mMoney);
+    gfx_text_boxed(1,y,field,GfxDark,GfxLight);
 
-    arduboy.setCursor(1 + 5 * 8,y);
-    arduboy.write('L');
-    arduboy.print(game.mLives);
+    appendNum(appendChar(field,'L'),game.mLives);
+    gfx_text_boxed(1 + 5 * 8,y,field,GfxDark,GfxLight);
 
-    arduboy.setCursor(1 + 11 * 8,y);
-    arduboy.write('R');
-    arduboy.print(game.mRound);
+    appendNum(appendChar(field,'R'),game.mRound);
+    gfx_text_boxed(1 + 11 * 8,y,field,GfxDark,GfxLight);
   }
 
-  if (game.mState == STATE_PLAYING_WAVE && arduboy.pressed(A_BUTTON))
+  if (game.mState == STATE_PLAYING_WAVE && pressed(MICROTD_A))
   {
     // draw health bars
 
@@ -2596,8 +2620,8 @@ void drawMap()
         uint8_t healthFraction =
           ((uint16_t) creep.getHealth()) * 5 / ct.mMaxHealth;
 
-        arduboy.fillRect(p.mX - 3, p.mY - 6, 6, 3,WHITE);
-        arduboy.drawFastHLine(p.mX - 2, p.mY - 5,healthFraction,BLACK);
+        gfx_fill_rect(p.mX - 3, p.mY - 6, 6, 3,GfxLight);
+        gfx_hline(p.mX - 2, p.mY - 5,healthFraction,GfxDark);
       }
     }
   }
@@ -2634,25 +2658,24 @@ void drawMap()
   if (rangeToDraw != 255)
   {
     // draw the tower range
-    arduboy.drawCircle(rangeToDrawCenter.mX,rangeToDrawCenter.mY,
-      rangeToDraw,BLACK);
+    gfx_circle(rangeToDrawCenter.mX,rangeToDrawCenter.mY,
+      rangeToDraw,GfxDark);
 
     if (drawAura)
-      arduboy.drawRect(
+      gfx_rect(
         rangeToDrawCenter.mX - TILE_WIDTH_HALF - TILE_WIDTH,
         rangeToDrawCenter.mY - TILE_HEIGHT_HALF - TILE_HEIGHT,
-        TILE_WIDTH * 3, TILE_HEIGHT * 3, BLACK);
+        TILE_WIDTH * 3, TILE_HEIGHT * 3, GfxDark);
   }
 
   if (game.mState == STATE_PLAYING_MENU)
   {
     // draw game menu
 
-    arduboy.fillRect(0,DISPLAY_HEIGHT - TILE_HEIGHT - 1,DISPLAY_WIDTH,
-      TILE_HEIGHT + 1,WHITE);
+    gfx_fill_rect(0,DISPLAY_HEIGHT - TILE_HEIGHT - 1,DISPLAY_WIDTH,
+      TILE_HEIGHT + 1,GfxLight);
 
-    arduboy.drawFastHLine(0,DISPLAY_HEIGHT - TILE_HEIGHT - 1,DISPLAY_WIDTH,
-      BLACK); 
+    gfx_hline(0,DISPLAY_HEIGHT - TILE_HEIGHT - 1,DISPLAY_WIDTH,GfxDark);
 
     uint8_t y = DISPLAY_HEIGHT - TILE_HEIGHT;
 
@@ -2667,120 +2690,109 @@ void drawMap()
 
       if (game.mSelectedMenuItem == i)
       {
-        arduboy.drawBitmap(x,y,item.mIcon,TILE_WIDTH,TILE_HEIGHT,BLACK);
-        arduboy.setCursor(1,y - 9);
-        arduboy.print(item.mText);
+        gfx_bitmap(x,y,item.mIcon,TILE_WIDTH,TILE_HEIGHT,GfxDark);
+
+        char label[44];
+        char *end = appendStr(label,item.mText);
 
         if (item.mPrice > 0)
-        {
-          arduboy.write(' ');
-          arduboy.write('(');
-          arduboy.write('$');
-          arduboy.print(item.mPrice);
-          arduboy.write(')');
-        }
+          appendChar(appendNum(appendStr(end," ($"),item.mPrice),')');
+
+        gfx_text_boxed(1,y - 9,label,GfxDark,GfxLight);
       }
       else
       {
-        arduboy.fillRect(x,y,TILE_WIDTH,TILE_HEIGHT,BLACK);
-        arduboy.drawBitmap(x,y,item.mIcon,TILE_WIDTH,TILE_HEIGHT,WHITE);
+        gfx_fill_rect(x,y,TILE_WIDTH,TILE_HEIGHT,GfxDark);
+        gfx_bitmap(x,y,item.mIcon,TILE_WIDTH,TILE_HEIGHT,GfxLight);
       }
 
       if (item.mState == ITEM_STATE_UNAVAILABLE)
-        arduboy.drawBitmap(x,y,ditherImage,TILE_WIDTH,TILE_HEIGHT,BLACK);
+        gfx_bitmap(x,y,ditherImage,TILE_WIDTH,TILE_HEIGHT,GfxDark);
     }
   }
 }
 
-uint8_t buttonRepeatCounter = BUTTON_REPEAT_DELAY;
-
-inline void checkButton(uint8_t button, bool checkRepeat=false)
+static inline void checkButton(uint8_t button, bool checkRepeat=false)
 {
-  if (arduboy.justPressed(button))
+  if (justPressed(button))
   {
     game.buttonDown(button);
   }
   
   if (checkRepeat)
   {
-    if (arduboy.pressed(button))
+    if (pressed(button))
     {
       if (buttonRepeatCounter == 0)
       {
-        if (arduboy.frameCount() % BUTTON_REPEAT_PERIOD == 0)
+        if (frameCounter % BUTTON_REPEAT_PERIOD == 0)
           game.buttonDown(button);
       }
       else
         buttonRepeatCounter--;
     }
-    else if (arduboy.justReleased(button))
+    else if (justReleased(button))
       buttonRepeatCounter = BUTTON_REPEAT_DELAY;
   }
 }
 
 void handleInputs()
 {
-  checkButton(A_BUTTON);
-  checkButton(B_BUTTON);
-  checkButton(LEFT_BUTTON,true);
-  checkButton(RIGHT_BUTTON,true);
-  checkButton(UP_BUTTON,true);
-  checkButton(DOWN_BUTTON,true);
+  checkButton(MICROTD_A);
+  checkButton(MICROTD_B);
+  checkButton(MICROTD_LEFT,true);
+  checkButton(MICROTD_RIGHT,true);
+  checkButton(MICROTD_UP,true);
+  checkButton(MICROTD_DOWN,true);
 
   // cheat
 
-  if (arduboy.pressed(UP_BUTTON) && arduboy.pressed(B_BUTTON))
-    game.mCheat = arduboy.pressed(DOWN_BUTTON) ? CHEAT_MONEY : CHEAT_NONE;  
+  if (pressed(MICROTD_UP) && pressed(MICROTD_B))
+    game.mCheat = pressed(MICROTD_DOWN) ? CHEAT_MONEY : CHEAT_NONE;  
 }
 
-bool recordWritten = false; ///< For detecting records and writing to EEPROM.
-
-void setup()
+void microtd_start(bool soundEnabled, const uint8_t records[MICROTD_MAPS])
 {
-  EEPROM.begin();
-  game.mSound = arduboy.audio.enabled();
+  game.mSound = soundEnabled;
 
-  beep1.begin();
-
-  arduboy.clear();
-  arduboy.setFrameRate(FRAMERATE);
-
-  if (EEPROM.read(EEPROM_START) != EEPROM_VALID_VALUE)
-  {
-    // EEPROM not valid => initialize it
-
-    for (uint8_t i = 0; i < MAPS_TOTAL; ++i)
-      EEPROM.update(EEPROM_START + i + 1,0); // zero the records
-   
-    EEPROM.update(EEPROM_START,EEPROM_VALID_VALUE);
-  }
-  else
-  {
-    // load the records from EEPROM
-
-    for (uint8_t i = 0; i < MAPS_TOTAL; ++i)
-      game.mRecords[i] = EEPROM.read(EEPROM_START + i + 1);
-  }
+  for (uint8_t i = 0; i < MAPS_TOTAL; ++i)
+    game.mRecords[i] = records[i];
 }
 
-void loop()
+void microtd_update(uint8_t held, uint8_t pressEdges)
 {
-  if (!(arduboy.nextFrame()))
-    return;
+  frameCounter++;
 
-  beep1.timer();
+  buttonsPrev = buttonsHeld;
+  buttonsHeld = held;
+  buttonsPressed = pressEdges;
 
-  arduboy.pollButtons();
   handleInputs();
 
   uint8_t updates =
-    game.mState == STATE_PLAYING_WAVE && arduboy.pressed(A_BUTTON) &&
-                   arduboy.pressed(B_BUTTON)? GAME_SPEEDUP : 1;
-  
+    game.mState == STATE_PLAYING_WAVE && pressed(MICROTD_A) &&
+                   pressed(MICROTD_B) ? GAME_SPEEDUP : 1;
+
   for (uint8_t i = 0; i < updates; ++i)
     game.update();
 
-  arduboy.clear();
+  if (game.mState == STATE_GAME_OVER)
+  {
+    if (game.isRecord() && !recordWritten)
+    {
+      game.mRecords[game.mMapNumber] = game.mRound;
+      recordWritten = true;
+      saveDirty = true;
+    }
+  }
+  else
+    recordWritten = false;
+
+}
+
+void microtd_draw()
+{
+  gfx_clear(GfxDark);
 
   if (game.mState == STATE_MENU)
     drawMenu();
@@ -2791,151 +2803,16 @@ void loop()
 
   if (game.mState == STATE_CONFIRM)
     drawConfirmDialog();
-
-  if (game.mState == STATE_GAME_OVER)
-  {
-    if (game.isRecord() && !recordWritten)
-    {
-      // new high score record to be written to EEPROM
-
-      EEPROM.update(EEPROM_START + game.mMapNumber + 1,game.mRound);
-
-      recordWritten = true;
-    }
-  }
-  else
-    recordWritten = false;
-
-  if (arduboy.audio.enabled() != game.mSound)
-  {
-    if (game.mSound)
-      arduboy.audio.on();
-    else
-      arduboy.audio.off();
-
-    playSound(SOUND_PUT);
-  }
-
-  arduboy.display();
 }
 
-#else
-
-// ========= PC debug code only =========
-
-string toStr(Direction d)
+bool microtd_take_records(uint8_t records[MICROTD_MAPS])
 {
-  switch (d)
-  {
-    case DIRECTION_N: return "N"; break;
-    case DIRECTION_E: return "E"; break;
-    case DIRECTION_S: return "S"; break;
-    case DIRECTION_W: return "W"; break;
-    default:          return "?"; break;
-  }
+  if (!saveDirty)
+    return false;
+
+  for (uint8_t i = 0; i < MAPS_TOTAL; ++i)
+    records[i] = game.mRecords[i];
+
+  saveDirty = false;
+  return true;
 }
-
-string toStr(BytePosition t)
-{
-  return "[" + to_string(t.mX) + "," + to_string(t.mY) + "]";
-}
-
-string toStr(PathSegment s)
-{
-  return toStr(s.getDirection()) + to_string(s.getLength()); 
-}
-
-string toStr(CreepPath p)
-{
-  string result = toStr(p.getStart()) + ":";
-
-  for (uint8_t i = 0; i < p.getNumSegments(); ++i)
-    result += " " + toStr(p.getSegment(i));
-
-  return result;
-}
-
-string toStr(GameMap m)
-{
-  string result = "map:";
-
-  for (uint8_t i = 0; i < m.getNumPaths(); ++i)
-    result += "\n  path: " + toStr(*(m.getPath(i)));
-
-  return result; 
-}
-
-string toStr(TowerInstance t)
-{
-  string result = "tower:\n  upgrades:";
-
-  if (t.upgraded(0))
-    result += "0";
-
-  if (t.upgraded(1))
-    result += "1";
-
-  return result;
-}
-
-string toStr(Tile t)
-{
-  switch (t.mType)
-  {
-    case TILE_EMPTY:       return "."; break;
-    case TILE_TOWER:       return "T"; break;
-    case TILE_CREEP_START: return "S"; break;
-    case TILE_CREEP_EXIT:  return "E"; break;
-    
-    case TILE_PATH_NS:     return "|"; break;
-    case TILE_PATH_WE:     return "-"; break;     
-    case TILE_PATH_NE:     return "L"; break;
-    case TILE_PATH_SE:     return "F"; break;
-    case TILE_PATH_NW:     return "/"; break;
-    case TILE_PATH_SW:     return "\\"; break;
-    case TILE_PATH_NES:    return ">"; break;
-    case TILE_PATH_ESW:    return "v"; break;
-    case TILE_PATH_NEW:    return "^"; break;
-    case TILE_PATH_NSW:    return "<"; break;
-    case TILE_PATH_NESW:   return "+"; break;
-
-    default: return         "?";
-  }
-}
-
-string toStr(PlayGround p)
-{
-  string result = "mPlayground:";
-
-  for (uint8_t y = 0; y < TILES_Y; ++y)
-  {
-    result += "\n";
-
-    for (uint8_t x = 0; x < TILES_X; ++x)
-      result += toStr(*(p.getTile(BytePosition(x,y))));
-  }
-
-
-  return result;
-}
-
-string toStr(CreepInstance c)
-{
-  string result = "creep:\n";
-
-  result += "  type: " + to_string((unsigned int) c.getTypeIndex()) + "\n";
-  result += "  path: " + to_string((long unsigned int) c.getPath()) + "\n";
-  result += "  position: " + to_string(c.getPosition()) + "\n";
-  result += "  health: " + to_string(c.getHealth());
-
-  return result;
-}
-
-int main()
-{
-  // test here
-
-  return 0;
-}
-
-#endif

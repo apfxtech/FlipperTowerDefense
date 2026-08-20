@@ -2,11 +2,24 @@
 
 ![](resources/preview.gif)
 
-This is a Tower Defense game for Arduboy.
+Tower Defense (MicroTD) ported from Arduboy to Flipper Zero.
 
-License: CC0
+## License
 
-ideas for derivative work:
+The Flipper Zero port and all modifications in this repository are licensed
+under the [MIT License](LICENSE) — forks and derivative works must keep the
+copyright notice and the license text.
+
+`game/microtd.cpp` is derived from the original Arduboy game and stays under
+CC0, along with the port changes made to it.
+
+## Credits
+
+Original game: *MicroTD - Tower Defense Game for Arduboy* by
+Miloslav "drummyfish" Ciz (2018), released under CC0 1.0 Universal
+(public domain). The game code stays in the public domain.
+
+## Ideas for derivative work (by Miloslav)
 
 - Make a mod where you can build towers during a wave in progress.
 - Make more maps (there's still plenty room for more in the ROM).

@@ -1,234 +1,249 @@
+/**
+  @file   main.cpp
+  @author apfxtech
+  @brief  application shell: viewport, input, timing, sound and saves
+
+  MicroTD - Tower Defense Game, Flipper Zero port
+
+  apfxtech, 2026, license: MIT (see LICENSE)
+
+  SPDX-License-Identifier: MIT
+*/
+
 #include <furi.h>
-#include <furi_hal.h>
+#include <furi_hal_rtc.h>
+#include <furi_hal_speaker.h>
 #include <gui/gui.h>
 #include <input/input.h>
+#include <storage/storage.h>
 
-#include <stdint.h>
-#include <stdlib.h>
 #include <string.h>
 
-#include "../lib/Arduboy2.h"
-#include "../lib/Arduino.h"
-#include "../lib/EEPROM.h"
+#include "microtd.h"
+#include "render.h"
 
-#define DISPLAY_WIDTH  128
-#define DISPLAY_HEIGHT 64
-#define BUFFER_SIZE    (DISPLAY_WIDTH * DISPLAY_HEIGHT / 8)
+#define MICROTD_FRAME_RATE  60
+#define MICROTD_TONE_VOLUME 1.0f
+#define MICROTD_SAVE_PATH   APP_DATA_PATH("microtd.save")
 
 typedef struct {
-    uint8_t screen_buffer[BUFFER_SIZE];
-    uint8_t front_buffer[BUFFER_SIZE];
-
+    FuriMutex* mutex;
+    FuriMessageQueue* input_queue;
+    ViewPort* view_port;
     Gui* gui;
-    Canvas* canvas;
-    FuriMutex* fb_mutex;
-    FuriMutex* game_mutex;
-    FuriPubSub* input_events;
-    FuriPubSubSubscription* input_sub;
 
-    volatile uint8_t input_state;
-    volatile bool exit_requested;
-    volatile bool back_long_requested;
-    volatile bool back_long_suppressed;
-    volatile uint32_t input_cb_inflight;
-} FlipperState;
+    uint8_t held;
+    uint8_t press_latch;
+    bool back_long;
+    bool back_suppressed;
+    bool exit_requested;
 
-extern void setup();
-extern void loop();
-extern bool microtd_handle_back_long();
-extern Arduboy2 arduboy;
+    bool speaker_owned;
+    bool tone_active;
+    uint32_t tone_until;
 
-static FlipperState* g_state = NULL;
+    uint8_t records[MICROTD_MAPS];
+} MicroTdApp;
 
-static void wait_input_callbacks_idle(FlipperState* state) {
-    if(!state) return;
-    while(__atomic_load_n((uint32_t*)&state->input_cb_inflight, __ATOMIC_ACQUIRE) != 0) {
-        furi_delay_ms(1);
+static MicroTdApp* app_instance = NULL;
+
+void platform_tone(uint16_t frequency, uint8_t frames) {
+    MicroTdApp* app = app_instance;
+    if(!app || !app->speaker_owned || frequency == 0) return;
+
+    furi_hal_speaker_start((float)frequency, MICROTD_TONE_VOLUME);
+    app->tone_active = true;
+    app->tone_until = furi_get_tick() + (furi_kernel_get_tick_frequency() * frames) /
+                                            MICROTD_FRAME_RATE;
+}
+
+static void tone_expire(MicroTdApp* app) {
+    if(!app->tone_active) return;
+    if((int32_t)(furi_get_tick() - app->tone_until) < 0) return;
+
+    furi_hal_speaker_stop();
+    app->tone_active = false;
+}
+
+static void records_load(uint8_t records[MICROTD_MAPS]) {
+    Storage* storage = (Storage*)furi_record_open(RECORD_STORAGE);
+    File* file = storage_file_alloc(storage);
+
+    if(storage_file_open(file, MICROTD_SAVE_PATH, FSAM_READ, FSOM_OPEN_EXISTING)) {
+        storage_file_read(file, records, MICROTD_MAPS);
+        storage_file_close(file);
+    }
+
+    storage_file_free(file);
+    furi_record_close(RECORD_STORAGE);
+}
+
+static void records_store(const uint8_t records[MICROTD_MAPS]) {
+    Storage* storage = (Storage*)furi_record_open(RECORD_STORAGE);
+    File* file = storage_file_alloc(storage);
+
+    if(storage_file_open(file, MICROTD_SAVE_PATH, FSAM_WRITE, FSOM_CREATE_ALWAYS)) {
+        storage_file_write(file, records, MICROTD_MAPS);
+        storage_file_close(file);
+    }
+
+    storage_file_free(file);
+    furi_record_close(RECORD_STORAGE);
+}
+
+static uint8_t button_from_key(InputKey key) {
+    switch(key) {
+    case InputKeyUp:
+        return MICROTD_UP;
+    case InputKeyDown:
+        return MICROTD_DOWN;
+    case InputKeyLeft:
+        return MICROTD_LEFT;
+    case InputKeyRight:
+        return MICROTD_RIGHT;
+    case InputKeyOk:
+        return MICROTD_A;
+    case InputKeyBack:
+        return MICROTD_B;
+    default:
+        return 0;
     }
 }
 
-static void framebuffer_commit_callback(
-    uint8_t* data,
-    size_t size,
-    CanvasOrientation orientation,
-    void* context) {
-    FlipperState* state = (FlipperState*)context;
-    if(!state || !data || size < BUFFER_SIZE) return;
-    (void)orientation;
-
-    if(furi_mutex_acquire(state->fb_mutex, 0) != FuriStatusOk) return;
-    const uint8_t* src = state->front_buffer;
-    for(size_t i = 0; i < BUFFER_SIZE; i++) {
-        data[i] = (uint8_t)(src[i] ^ 0xFF);
-    }
-    furi_mutex_release(state->fb_mutex);
-}
-
-static void input_events_callback(const void* value, void* ctx) {
-    if(!value || !ctx) return;
-
-    FlipperState* state = (FlipperState*)ctx;
-    const InputEvent* event = (const InputEvent*)value;
-    Arduboy2Base::InputContext* input_ctx = arduboy.inputContext();
-
-    (void)__atomic_fetch_add((uint32_t*)&state->input_cb_inflight, 1, __ATOMIC_RELAXED);
-
+static void input_apply(MicroTdApp* app, const InputEvent* event) {
     if(event->key == InputKeyBack) {
-        if(state->back_long_suppressed) {
-            if(event->type == InputTypeRelease) {
-                state->back_long_suppressed = false;
-            }
-            arduboy.clearInputMask(INPUT_B);
-            goto exit_callback;
+        if(event->type == InputTypeLong) {
+            app->back_long = true;
+            app->back_suppressed = true;
+            app->held &= (uint8_t)~MICROTD_B;
+            app->press_latch &= (uint8_t)~MICROTD_B;
+            return;
         }
 
-        if(event->type == InputTypeLong) {
-            state->back_long_requested = true;
-            state->back_long_suppressed = true;
-            arduboy.clearInputMask(INPUT_B);
-            goto exit_callback;
+        if(app->back_suppressed) {
+            if(event->type == InputTypeRelease) app->back_suppressed = false;
+            return;
         }
     }
 
-    Arduboy2Base::FlipperInputCallback(event, input_ctx);
+    const uint8_t bit = button_from_key(event->key);
+    if(!bit) return;
 
-exit_callback:
-    (void)__atomic_fetch_sub((uint32_t*)&state->input_cb_inflight, 1, __ATOMIC_RELAXED);
+    if(event->type == InputTypePress) {
+        app->held |= bit;
+        app->press_latch |= bit;
+    } else if(event->type == InputTypeRepeat) {
+        app->held |= bit;
+    } else if(event->type == InputTypeRelease) {
+        app->held &= (uint8_t)~bit;
+    }
 }
 
-extern "C" int32_t arduboy_app(void* p) {
+static void frame_advance(MicroTdApp* app) {
+    furi_mutex_acquire(app->mutex, FuriWaitForever);
+
+    if(app->back_long) {
+        app->back_long = false;
+        app->held = 0;
+        app->press_latch = 0;
+
+        if(microtd_back_long()) {
+            app->exit_requested = true;
+        }
+    }
+
+    if(!app->exit_requested) {
+        const uint8_t press = app->press_latch;
+        app->press_latch = 0;
+        microtd_update(app->held, press);
+    }
+
+    furi_mutex_release(app->mutex);
+
+    if(microtd_take_records(app->records)) {
+        records_store(app->records);
+    }
+}
+
+static void draw_callback(Canvas* canvas, void* context) {
+    MicroTdApp* app = (MicroTdApp*)context;
+
+    furi_mutex_acquire(app->mutex, FuriWaitForever);
+    gfx_bind(canvas);
+    microtd_draw();
+    gfx_unbind();
+    furi_mutex_release(app->mutex);
+}
+
+static void input_callback(InputEvent* event, void* context) {
+    MicroTdApp* app = (MicroTdApp*)context;
+    furi_message_queue_put(app->input_queue, event, FuriWaitForever);
+}
+
+extern "C" int32_t microtd_app(void* p) {
     UNUSED(p);
 
-    bool fb_callback_added = false;
-    int32_t rc = -1;
+    MicroTdApp* app = (MicroTdApp*)malloc(sizeof(MicroTdApp));
+    memset(app, 0, sizeof(MicroTdApp));
+    app_instance = app;
 
-    g_state = (FlipperState*)malloc(sizeof(FlipperState));
-    if(!g_state) return -1;
-    memset(g_state, 0, sizeof(FlipperState));
+    app->mutex = furi_mutex_alloc(FuriMutexTypeNormal);
+    app->input_queue = furi_message_queue_alloc(16, sizeof(InputEvent));
 
-    do {
-        g_state->game_mutex = furi_mutex_alloc(FuriMutexTypeNormal);
-        g_state->fb_mutex = furi_mutex_alloc(FuriMutexTypeNormal);
-        if(!g_state->game_mutex || !g_state->fb_mutex) break;
+    app->speaker_owned = furi_hal_speaker_acquire(100);
 
-        g_state->exit_requested = false;
-        g_state->back_long_requested = false;
-        g_state->back_long_suppressed = false;
-        g_state->input_cb_inflight = 0;
-        g_state->input_state = 0;
-        memset(g_state->screen_buffer, 0x00, BUFFER_SIZE);
-        memset(g_state->front_buffer, 0x00, BUFFER_SIZE);
+    records_load(app->records);
+    microtd_start(!furi_hal_rtc_is_flag_set(FuriHalRtcFlagStealthMode), app->records);
 
-        arduboy.begin(
-            g_state->screen_buffer,
-            &g_state->input_state,
-            g_state->game_mutex,
-            &g_state->exit_requested);
-        Sprites::setArduboy(&arduboy);
+    app->view_port = view_port_alloc();
+    view_port_draw_callback_set(app->view_port, draw_callback, app);
+    view_port_input_callback_set(app->view_port, input_callback, app);
 
-        g_state->gui = (Gui*)furi_record_open(RECORD_GUI);
-        if(!g_state->gui) break;
+    app->gui = (Gui*)furi_record_open(RECORD_GUI);
+    gui_add_view_port(app->gui, app->view_port, GuiLayerFullscreen);
 
-        gui_add_framebuffer_callback(g_state->gui, framebuffer_commit_callback, g_state);
-        fb_callback_added = true;
+    const uint32_t period = furi_kernel_get_tick_frequency() / MICROTD_FRAME_RATE;
+    uint32_t next_frame = furi_get_tick() + period;
 
-        g_state->canvas = gui_direct_draw_acquire(g_state->gui);
-        if(!g_state->canvas) break;
+    while(!app->exit_requested) {
+        const uint32_t now = furi_get_tick();
+        const int32_t remaining = (int32_t)(next_frame - now);
 
-        g_state->input_events = (FuriPubSub*)furi_record_open(RECORD_INPUT_EVENTS);
-        if(!g_state->input_events) break;
-
-        g_state->input_sub =
-            furi_pubsub_subscribe(g_state->input_events, input_events_callback, g_state);
-        if(!g_state->input_sub) break;
-
-        if(furi_mutex_acquire(g_state->game_mutex, FuriWaitForever) != FuriStatusOk) break;
-        arduboy.audio.begin();
-        EEPROM.begin();
-        setup();
-
-        if(furi_mutex_acquire(g_state->fb_mutex, FuriWaitForever) == FuriStatusOk) {
-            memcpy(g_state->front_buffer, g_state->screen_buffer, BUFFER_SIZE);
-            furi_mutex_release(g_state->fb_mutex);
-        }
-        furi_mutex_release(g_state->game_mutex);
-
-        if(g_state->canvas) canvas_commit(g_state->canvas);
-
-        while(!g_state->exit_requested) {
-            if(furi_mutex_acquire(g_state->game_mutex, 0) == FuriStatusOk) {
-                if(g_state->back_long_requested) {
-                    g_state->back_long_requested = false;
-                    const bool should_exit = microtd_handle_back_long();
-                    arduboy.resetInputState();
-
-                    if(should_exit) {
-                        g_state->exit_requested = true;
-                    }
-                }
-
-                const uint32_t frame_before = arduboy.frameCount;
-                if(!g_state->exit_requested) {
-                    loop();
-                }
-                const uint32_t frame_after = arduboy.frameCount;
-
-                if(frame_after != frame_before) {
-                    if(furi_mutex_acquire(g_state->fb_mutex, 0) == FuriStatusOk) {
-                        memcpy(g_state->front_buffer, g_state->screen_buffer, BUFFER_SIZE);
-                        furi_mutex_release(g_state->fb_mutex);
-                    }
-                }
-
-                furi_mutex_release(g_state->game_mutex);
-            }
-
-            if(g_state->canvas) canvas_commit(g_state->canvas);
-            furi_delay_ms(1);
+        InputEvent event;
+        if(remaining > 0 &&
+           furi_message_queue_get(app->input_queue, &event, (uint32_t)remaining) == FuriStatusOk) {
+            input_apply(app, &event);
+            continue;
         }
 
-        rc = 0;
-    } while(false);
-
-    arduboy.audio.saveOnOff();
-    EEPROM.commit();
-    arduboy_tone_sound_system_deinit();
-
-    if(g_state->input_sub && g_state->input_events) {
-        furi_pubsub_unsubscribe(g_state->input_events, g_state->input_sub);
-        g_state->input_sub = NULL;
-    }
-
-    wait_input_callbacks_idle(g_state);
-
-    if(g_state->input_events) {
-        furi_record_close(RECORD_INPUT_EVENTS);
-        g_state->input_events = NULL;
-    }
-
-    if(g_state->gui) {
-        if(g_state->canvas) {
-            gui_direct_draw_release(g_state->gui);
-            g_state->canvas = NULL;
+        next_frame += period;
+        if((int32_t)(furi_get_tick() - next_frame) > (int32_t)period) {
+            next_frame = furi_get_tick() + period;
         }
-        if(fb_callback_added) {
-            gui_remove_framebuffer_callback(g_state->gui, framebuffer_commit_callback, g_state);
-        }
-        furi_record_close(RECORD_GUI);
-        g_state->gui = NULL;
+
+        tone_expire(app);
+        frame_advance(app);
+        view_port_update(app->view_port);
     }
 
-    if(g_state->game_mutex) {
-        furi_mutex_free(g_state->game_mutex);
-        g_state->game_mutex = NULL;
-    }
-    if(g_state->fb_mutex) {
-        furi_mutex_free(g_state->fb_mutex);
-        g_state->fb_mutex = NULL;
+    gui_remove_view_port(app->gui, app->view_port);
+    furi_record_close(RECORD_GUI);
+    view_port_free(app->view_port);
+
+    if(app->speaker_owned) {
+        if(app->tone_active) furi_hal_speaker_stop();
+        furi_hal_speaker_release();
     }
 
-    free(g_state);
-    g_state = NULL;
+    if(microtd_take_records(app->records)) {
+        records_store(app->records);
+    }
 
-    return rc;
+    furi_message_queue_free(app->input_queue);
+    furi_mutex_free(app->mutex);
+
+    app_instance = NULL;
+    free(app);
+
+    return 0;
 }
