@@ -24,7 +24,9 @@
 
 #define MICROTD_FRAME_RATE  60
 #define MICROTD_TONE_VOLUME 1.0f
-#define MICROTD_SAVE_PATH   APP_DATA_PATH("microtd.save")
+#define MICROTD_SAVE_PATH   APP_DATA_PATH("eeprom.bin")
+
+#define BACK_EXIT_HOLD_MS 800
 
 typedef struct {
     FuriMutex* mutex;
@@ -34,8 +36,10 @@ typedef struct {
 
     uint8_t held;
     uint8_t press_latch;
+    bool back_down;
+    bool back_as_b;
+    uint32_t back_tick;
     bool back_long;
-    bool back_suppressed;
     bool exit_requested;
 
     bool speaker_owned;
@@ -53,8 +57,8 @@ void platform_tone(uint16_t frequency, uint8_t frames) {
 
     furi_hal_speaker_start((float)frequency, MICROTD_TONE_VOLUME);
     app->tone_active = true;
-    app->tone_until = furi_get_tick() + (furi_kernel_get_tick_frequency() * frames) /
-                                            MICROTD_FRAME_RATE;
+    app->tone_until =
+        furi_get_tick() + (furi_kernel_get_tick_frequency() * frames) / MICROTD_FRAME_RATE;
 }
 
 static void tone_expire(MicroTdApp* app) {
@@ -110,20 +114,27 @@ static uint8_t button_from_key(InputKey key) {
     }
 }
 
+static void back_becomes_b(MicroTdApp* app) {
+    if(app->back_as_b) return;
+    app->back_as_b = true;
+    app->held |= MICROTD_B;
+    app->press_latch |= MICROTD_B;
+}
+
 static void input_apply(MicroTdApp* app, const InputEvent* event) {
     if(event->key == InputKeyBack) {
-        if(event->type == InputTypeLong) {
-            app->back_long = true;
-            app->back_suppressed = true;
+        if(event->type == InputTypePress) {
+            app->back_down = true;
+            app->back_as_b = false;
+            app->back_tick = furi_get_tick();
+            if(app->held != 0) back_becomes_b(app);
+        } else if(event->type == InputTypeRelease) {
+            if(app->back_down && !app->back_as_b) app->press_latch |= MICROTD_B;
             app->held &= (uint8_t)~MICROTD_B;
-            app->press_latch &= (uint8_t)~MICROTD_B;
-            return;
+            app->back_down = false;
+            app->back_as_b = false;
         }
-
-        if(app->back_suppressed) {
-            if(event->type == InputTypeRelease) app->back_suppressed = false;
-            return;
-        }
+        return;
     }
 
     const uint8_t bit = button_from_key(event->key);
@@ -132,11 +143,22 @@ static void input_apply(MicroTdApp* app, const InputEvent* event) {
     if(event->type == InputTypePress) {
         app->held |= bit;
         app->press_latch |= bit;
+        if(app->back_down) back_becomes_b(app);
     } else if(event->type == InputTypeRepeat) {
         app->held |= bit;
     } else if(event->type == InputTypeRelease) {
         app->held &= (uint8_t)~bit;
     }
+}
+
+static void back_gesture_check(MicroTdApp* app) {
+    if(!app->back_down || app->back_as_b) return;
+
+    const uint32_t hold = furi_get_tick() - app->back_tick;
+    if(hold < furi_kernel_get_tick_frequency() * BACK_EXIT_HOLD_MS / 1000) return;
+
+    app->back_long = true;
+    app->back_down = false;
 }
 
 static void frame_advance(MicroTdApp* app) {
@@ -177,7 +199,7 @@ static void draw_callback(Canvas* canvas, void* context) {
 
 static void input_callback(InputEvent* event, void* context) {
     MicroTdApp* app = (MicroTdApp*)context;
-    furi_message_queue_put(app->input_queue, event, FuriWaitForever);
+    furi_message_queue_put(app->input_queue, event, 0);
 }
 
 extern "C" int32_t microtd_app(void* p) {
@@ -213,8 +235,11 @@ extern "C" int32_t microtd_app(void* p) {
         if(remaining > 0 &&
            furi_message_queue_get(app->input_queue, &event, (uint32_t)remaining) == FuriStatusOk) {
             input_apply(app, &event);
+            back_gesture_check(app);
             continue;
         }
+
+        back_gesture_check(app);
 
         next_frame += period;
         if((int32_t)(furi_get_tick() - next_frame) > (int32_t)period) {

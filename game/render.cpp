@@ -92,7 +92,8 @@ void gfx_vline(int16_t x, int16_t y, int16_t h, GfxColor color) {
         const int16_t page_end = (int16_t)(y0 - shift + 8);
         const int16_t span_end = (page_end < y1) ? page_end : y1;
         const uint8_t span = (uint8_t)(span_end - y0);
-        const uint8_t mask = (uint8_t)(((span >= 8) ? 0xFF : (uint8_t)((1u << span) - 1)) << shift);
+        const uint8_t mask =
+            (uint8_t)(((span >= 8) ? 0xFF : (uint8_t)((1u << span) - 1)) << shift);
 
         uint8_t* dst = &gfx_fb[((y0 >> 3) * GFX_WIDTH) + x];
         *dst = (uint8_t)((*dst & (uint8_t)~mask) | (value & mask));
@@ -114,15 +115,17 @@ void gfx_hline(int16_t x, int16_t y, int16_t w, GfxColor color) {
     const uint8_t bit = (uint8_t)(1u << (y & 7));
 
     if(color == GfxDark) {
-        for(int16_t i = x0; i < x1; i++) *dst++ |= bit;
+        for(int16_t i = x0; i < x1; i++)
+            *dst++ |= bit;
     } else {
-        for(int16_t i = x0; i < x1; i++) *dst++ &= (uint8_t)~bit;
+        for(int16_t i = x0; i < x1; i++)
+            *dst++ &= (uint8_t)~bit;
     }
 }
 
 void gfx_line(int16_t x0, int16_t y0, int16_t x1, int16_t y1, GfxColor color) {
     int16_t dx = (int16_t)(x1 > x0 ? x1 - x0 : x0 - x1);
-    int16_t dy = (int16_t)-(y1 > y0 ? y1 - y0 : y0 - y1);
+    int16_t dy = (int16_t) - (y1 > y0 ? y1 - y0 : y0 - y1);
     int16_t step_x = (int16_t)(x0 < x1 ? 1 : -1);
     int16_t step_y = (int16_t)(y0 < y1 ? 1 : -1);
     int16_t err = (int16_t)(dx + dy);
